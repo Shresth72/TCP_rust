@@ -14,16 +14,18 @@
 - In this, Kernel creates a virtual space for us. So, Kernel treats the TUN interface as it's own network interface. So, any send the Kernel does turns into a receive for the user program and any write by the user program goes through the TUN, and appear to the kernel as a network IP packet.
 - TUN has it's own IP Protocol and network metadata.
 
-#### 2. TCP Packet Frame Format
+#### 2. Receiving and Parsing TCP Packet Header (SYN)
 
-- Flags [2 bytes]
-- Proto [2 bytes]
+TCP Packet Frame Format :
 
-  > 0x086dd Ethernet Type for IPv6 <br/>
-  > 0x0800 ICMP - Protocol 1 (Ping) <br/>
-  > TCP - Protocol 6
+- **Flags [2 bytes]**
+- **Proto [2 bytes]**
+  - 0x086dd Ethernet Type for IPv6 <br/>
+  - 0x0800 ICMP - Protocol 1 (Ping) <br/>
+  - TCP - Protocol 6 <br/>
+- **Raw Protocol(IP, IPv6, etc) frame**
 
-- Raw Protocol(IP, IPv6, etc) frame
+Receiving these packets with their headers parsed performs the `SYN` action of the TCP Protocol
 
 ### RFC 1122: "Requirements for Hosts - Communication Layers"
 
