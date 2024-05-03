@@ -8,19 +8,20 @@
 
 > However, using Sockets for implementing our own TCP might cause conflicts as Kernel already implements it's own TCP to talk to the internet.
 
-##### Emulate network inside the user's space using a TUN device
+#### 1. Emulate network inside the user's space using a TUN device
 
 - Hence, using a Linux feature called TUN/TAP provides packet reception and transmission for user space program. Instead of receiving and writing packets from a physical media, it receives them from user space program and writes them to the user program respectively.
 - In this, Kernel creates a virtual space for us. So, Kernel treats the TUN interface as it's own network interface. So, any send the Kernel does turns into a receive for the user program and any write by the user program goes through the TUN, and appear to the kernel as a network IP packet.
 - TUN has it's own IP Protocol and network metadata.
 
-#### TCP Packet Frame Format
+#### 2. TCP Packet Frame Format
 
 - Flags [2 bytes]
 - Proto [2 bytes]
 
-  > 0x086dd => Ethernet Type for IPv6 <br/>
-  > 0x0800 => Ping Type for IPv4
+  > 0x086dd Ethernet Type for IPv6 <br/>
+  > 0x0800 ICMP - Protocol 1 (Ping) <br/>
+  > TCP - Protocol 6
 
 - Raw Protocol(IP, IPv6, etc) frame
 
