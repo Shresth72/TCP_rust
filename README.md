@@ -14,6 +14,16 @@
 - In this, Kernel creates a virtual space for us. So, Kernel treats the TUN interface as it's own network interface. So, any send the Kernel does turns into a receive for the user program and any write by the user program goes through the TUN, and appear to the kernel as a network IP packet.
 - TUN has it's own IP Protocol and network metadata.
 
+#### TCP Packet Frame Format
+
+- Flags [2 bytes]
+- Proto [2 bytes]
+
+  > 0x086dd => Ethernet Type for IPv6 <br/>
+  > 0x0800 => Ping Type for IPv4
+
+- Raw Protocol(IP, IPv6, etc) frame
+
 ### RFC 1122: "Requirements for Hosts - Communication Layers"
 
 -
