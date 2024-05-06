@@ -1,10 +1,22 @@
 #![allow(unused)]
 
-use std::{io, mem::swap, usize};
+use std::{
+    io::{self, Write},
+    mem::swap,
+};
 
 pub enum State {
     SynRecvd,
     Estab,
+}
+
+impl State {
+    fn is_synchronized(&self) -> bool {
+        match *self {
+            State::SynRecvd => false,
+            State::Estab => true,
+        }
+    }
 }
 
 pub struct Connection {
@@ -12,6 +24,7 @@ pub struct Connection {
     send: SendSequenceSpace,
     recv: RecvSequenceSpace,
     ip: etherparse::Ipv4Header,
+    tcp: etherparse::TcpHeader,
 }
 
 // State of the Send Sequence Space (RFC 793 S3.2 F4)
@@ -65,24 +78,31 @@ impl Connection {
         }
 
         let iss = 0;
+        let wnd = 10;
         let mut c = Connection {
             state: State::SynRecvd,
+
             send: SendSequenceSpace {
                 iss,
                 una: iss,
-                nxt: iss + 1,
-                wnd: 10,
+                nxt: iss,
+                wnd,
                 up: false,
 
                 wl1: 0,
                 wl2: 0,
             },
+
             recv: RecvSequenceSpace {
                 irs: tcph.sequence_number(),
                 nxt: tcph.sequence_number() + 1,
                 wnd: tcph.window_size(),
                 up: false,
             },
+
+            // parse SYN packet and send SYN ACK
+            tcp: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
+
             ip: etherparse::Ipv4Header::new(
                 0,
                 64,
@@ -103,40 +123,87 @@ impl Connection {
             .unwrap(),
         };
 
-        // parse SYN packet and send SYN ACK
-        // and establish a connection
-        let mut syn_ack = etherparse::TcpHeader::new(
-            tcph.destination_port(),
-            tcph.source_port(),
-            c.send.iss,
-            c.send.wnd,
-        );
-
-        // Next byte we are expecting
-        syn_ack.acknowledgment_number = c.recv.nxt;
-        syn_ack.syn = true;
-        syn_ack.ack = true;
-        let _ = c.ip.set_payload_len(syn_ack.header_len() as usize + 0);
-
-        // The kernel already does this for tun0
-        // syn_ack.checksum = syn_ack
-        //    .calc_checksum_ipv4(&c.ip, &[])
-        //    .expect("failed to compute checksum");
-
-        // Write out the headers
-        let unwritten = {
-            let mut unwritten = &mut buf[..];
-            let _ = c.ip.write(&mut unwritten);
-            let _ = syn_ack.write(&mut unwritten);
-            unwritten.len()
-        };
+        // Establish connection
+        c.tcp.syn = true;
+        c.tcp.ack = true;
 
         // eprintln!("got ip header:\n{:02x?}", iph);
         // eprintln!("got tcp header:\n{:02x?}", tcph);
         // eprintln!("responding with {:02x?}", &buf[..buf.len() - unwritten]);
 
-        nic.send(&buf[..unwritten])?;
+        c.write(nic, &[])?;
         Ok(Some(c))
+    }
+
+    fn write(&mut self, nic: &mut tun_tap::Iface, payload: &[u8]) -> io::Result<usize> {
+        let mut buf = [0u8; 1500];
+
+        self.tcp.sequence_number = self.send.nxt;
+        self.tcp.acknowledgment_number = self.recv.nxt;
+
+        let size = std::cmp::min(
+            buf.len(),
+            self.tcp.header_len() as usize + self.ip.header_len() as usize + payload.len(),
+        );
+        self.ip.set_payload_len(size);
+
+        // The kernel already does this for tun0
+        // self.ip.checksum = self.tcp
+        //    .calc_checksum_ipv4(&self.ip, &[])
+        //    .expect("failed to compute checksum");
+
+        // Write out the headers
+        use std::io::Write;
+
+        // unwritten is mutable slice pointer to buf
+        // So, when we write into it, it removes it from the start
+        // and the new writes only happen to parts that were not written yet.
+        let mut unwritten = &mut buf[..];
+        self.ip.write(&mut unwritten);
+        self.tcp.write(&mut unwritten);
+        let payload_bytes = unwritten.write(payload)?;
+        let unwritten = unwritten.len();
+
+        self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
+        if self.tcp.syn {
+            self.send.nxt = self.send.nxt.wrapping_add(1);
+            self.tcp.syn = false;
+        }
+        if self.tcp.fin {
+            self.send.nxt = self.send.nxt.wrapping_add(1);
+            self.tcp.fin = false;
+        }
+
+        nic.send(&buf[..buf.len() - unwritten])?;
+        Ok(payload_bytes)
+    }
+
+    fn send_rst(&mut self, nic: &mut tun_tap::Iface) -> io::Result<()> {
+        self.tcp.rst = true;
+
+        // TODO:
+        // If the incoming segment has an ACK field
+        /* Reset takes its *sequence_number* from the ACK field
+        otherwise, zero and the ACK field is set to
+        sum of the sequence_number and segment length of the incoming segment
+        Connection State remains the same
+        */
+
+        // TODO:
+        // Handle synchronized RST
+        /* If the connection is in a synchronized state (ESTABLISH, FIN-WAIT-1,
+        FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT), any
+        unacceptable segment must elicit only an empty acknowledgement segment
+        containing the current send-sequence number and an acknowledgement
+        indicating the next sequence_number expected to be received, and
+        the connection remains in the same state.
+        */
+
+        self.tcp.sequence_number = 0;
+        self.tcp.acknowledgment_number = 0;
+        self.write(nic, &[])?;
+
+        Ok(())
     }
 
     pub fn on_packet<'a>(
@@ -153,6 +220,10 @@ impl Connection {
         let ackn = tcph.acknowledgment_number();
 
         if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+            if !self.state.is_synchronized() {
+                // Reset Generation => Send a RST (RFC 793, page 15)
+                self.send_rst(nic);
+            }
             return Ok(());
         }
 
@@ -193,6 +264,13 @@ impl Connection {
                 if !tcph.ack() {
                     return Ok(());
                 }
+
+                // must have ACKed our SYN, since we detected atleast one acked byte,
+                // and we have only sent one byte (SYN)
+                self.state = State::Estab;
+
+                // Terminate the connection (test)
+                //
             }
 
             State::Estab => {

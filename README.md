@@ -27,6 +27,8 @@ TCP Packet Frame Format :
 
 Receiving these packets with their headers parsed performs the `SYN` action of the TCP Protocol
 
+#### n. Three Way Handshake for Connection Synchronization
+
 ### RFC 1122: "Requirements for Hosts - Communication Layers"
 
 -
