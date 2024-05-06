@@ -157,8 +157,11 @@ impl Connection {
         If the recalculated checksum matches the transmitted checksum,
         it indicates that the packet was not corrupted during transmission.
         However, if the checksum values do not match, it suggests that the packet
-        may have been altered or corrupted, and the recipient can request a retransmission of the packet.
+        may have been altered or corrupted, and the recipient can request a retransmission of the packet
+
+        Ensures that the TCP packet can be verified for integrity when it is transmitted over the network
         */
+
         self.tcp.checksum = self
             .tcp
             .calc_checksum_ipv4(&self.ip, &[])
