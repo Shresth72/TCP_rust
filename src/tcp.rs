@@ -151,7 +151,14 @@ impl Connection {
         self.ip
             .set_payload_len(size - self.ip.header_len() as usize);
 
-        // TODO: Explaination
+        /*
+        When a packet is received, the recipient can recalculate the checksum using the same algorithm
+        and compare it to the checksum value included in the packet.
+        If the recalculated checksum matches the transmitted checksum,
+        it indicates that the packet was not corrupted during transmission.
+        However, if the checksum values do not match, it suggests that the packet
+        may have been altered or corrupted, and the recipient can request a retransmission of the packet.
+        */
         self.tcp.checksum = self
             .tcp
             .calc_checksum_ipv4(&self.ip, &[])
