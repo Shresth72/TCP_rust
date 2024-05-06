@@ -11,13 +11,14 @@ if [[ $ext -ne 0 ]]; then
     exit $ext
 fi
 
+# Allow exec to perform network configuration tasks
+sudo setcap cap_net_admin=eip target/release/tcp_rust
+target/release/tcp_rust &
+
 # Assign subnet to tun0 process 
 sudo ip addr add 192.168.0.1/24 dev tun0
 # Activate Network Interface tun0
 sudo ip link set up dev tun0
-# Allow exec to perform network configuration tasks
-sudo setcap cap_net_admin=eip target/release/tcp_rust
-target/release/tcp_rust &
 
 # Process ID of last bg process 
 pid=$!

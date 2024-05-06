@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::io;
 
 pub enum State {
@@ -99,31 +101,46 @@ impl Connection {
         syn_ack.ack = true;
 
         let mut ip = etherparse::Ipv4Header::new(
-            syn_ack.header_len().try_into().expect("expected u16"),
+            syn_ack.header_len() as u16,
             64,
             etherparse::IpNumber::TCP,
-            iph.destination(),
-            iph.source(),
-        );
+            [
+                iph.destination()[0],
+                iph.destination()[1],
+                iph.destination()[2],
+                iph.destination()[3],
+            ],
+            [
+                iph.source()[0],
+                iph.source()[1],
+                iph.source()[2],
+                iph.source()[3],
+            ],
+        )
+        .unwrap();
+
+        eprintln!("got ip header:\n{:02x?}", iph);
+        eprintln!("got tcp header:\n{:02x?}", tcph);
 
         let unwritten = {
             let mut unwritten = &mut buf[..];
-            // ip.write(&mut unwritten);
-            let _ = syn_ack.write(&mut unwritten);
+            ip.write(&mut unwritten);
+            syn_ack.write(&mut unwritten);
             unwritten.len()
         };
 
+        // eprintln!("responding with {:02x?}", &buf[..unwritten]);
         nic.send(&buf[..unwritten])?;
         Ok(Some(c))
     }
 
     pub fn on_packet<'a>(
-        // 'a - Lifetime of the packet
+        &mut self,
         nic: &mut tun_tap::Iface,
         iph: etherparse::Ipv4HeaderSlice<'a>,
         tcph: etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
-    ) -> io::Result<Option<Self>> {
-        todo!()
+    ) -> io::Result<()> {
+        Ok(())
     }
 }
