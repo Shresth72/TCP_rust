@@ -16,12 +16,19 @@ fn main() -> io::Result<()> {
 
     loop {
         let nbytes = nic.recv(&mut buf[..])?;
-        //let _eth_flags = u16::from_be_bytes([buf[0], buf[1]]);
-        //let eth_protocol = u16::from_be_bytes([buf[2], buf[3]]);
-        //if eth_protocol != 0x0800 {
-        // Not IPv4 (Avoids receiving packet from the default network or Internet Provider)
-        //    continue;
-        //}
+
+        /*
+        if s/without_packet_info/new/:
+
+        let _eth_flags = u16::from_be_bytes([buf[0], buf[1]]);
+        let eth_protocol = u16::from_be_bytes([buf[2], buf[3]]);
+        if eth_protocol != 0x0800 {
+            // Not IPv4 (Avoids receiving packet from the default network or Internet Provider)
+            continue;
+        }
+
+        and also include on send
+        */
 
         match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
             Ok(iph) => {
@@ -64,8 +71,8 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("ignoring packet {:?}", e);
+            Err(_) => {
+                // eprintln!("ignoring packet {:?}", e);
             }
         }
     }
