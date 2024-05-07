@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use crate::utils::is_between_wrapped;
 use std::{
     io::{self, Write},
     mem::swap,
@@ -243,15 +244,9 @@ impl Connection {
         let okay = if slen == 0 {
             // zero length segment has seperate rules for acceptance
             if self.recv.wnd == 0 {
-                if seqn != self.recv.nxt {
-                    false
-                } else {
-                    true
-                }
-            } else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend) {
-                false
+                seqn == self.recv.nxt
             } else {
-                true
+                is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend)
             }
         } else {
             if self.recv.wnd == 0 {
@@ -341,27 +336,4 @@ impl Connection {
 
         Ok(())
     }
-}
-
-fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
-    use std::cmp::Ordering;
-
-    match start.cmp(&x) {
-        Ordering::Equal => return false,
-        Ordering::Less => {
-            // check is violated if NXT is between UNA and ACK
-            if end >= start && end <= x {
-                return false;
-            }
-        }
-        Ordering::Greater => {
-            // check is ok if NXT is between UNA and ACK
-            if end > x && end < start {
-            } else {
-                return false;
-            }
-        }
-    }
-
-    true
 }

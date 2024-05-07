@@ -1,6 +1,7 @@
 use std::{collections::HashMap, io, net::Ipv4Addr};
 
 mod tcp;
+mod utils;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 struct Quad {
