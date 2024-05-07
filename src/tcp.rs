@@ -2,8 +2,8 @@
 
 use crate::utils::is_between_wrapped;
 use std::{
+    collections::VecDeque,
     io::{self, Write},
-    mem::swap,
 };
 
 pub enum State {
@@ -29,6 +29,11 @@ pub struct Connection {
     recv: RecvSequenceSpace,
     ip: etherparse::Ipv4Header,
     tcp: etherparse::TcpHeader,
+
+    // bytes that the Connection has read, but not the user
+    pub(crate) incoming: VecDeque<u8>,
+    // bytes that the user has given to the connection but we have not been able to send yet
+    pub(crate) unacked: VecDeque<u8>,
 }
 
 // State of the Send Sequence Space (RFC 793 S3.2 F4)
@@ -74,8 +79,6 @@ impl Connection {
         tcph: etherparse::TcpHeaderSlice<'a>,
         _data: &'a [u8],
     ) -> io::Result<Option<Self>> {
-        let mut buf = [0u8; 1500];
-
         if !tcph.syn() {
             // only expected SYN packet
             return Ok(None);
@@ -125,6 +128,9 @@ impl Connection {
                 ],
             )
             .unwrap(),
+
+            incoming: Default::default(),
+            unacked: Default::default(),
         };
 
         // Establish connection
@@ -145,7 +151,8 @@ impl Connection {
             buf.len(),
             self.tcp.header_len() as usize + self.ip.header_len() as usize + payload.len(),
         );
-        self.ip
+        let _ = self
+            .ip
             .set_payload_len(size - self.ip.header_len() as usize);
 
         /*
@@ -165,14 +172,14 @@ impl Connection {
             .expect("failed to compute checksum");
 
         // Write out the headers (segment)
-        use std::io::Write;
 
         // unwritten is mutable slice pointer to buf
         // So, when we write into it, it removes it from the start
         // and the new writes only happen to parts that were not written yet.
         let mut unwritten = &mut buf[..];
-        self.ip.write(&mut unwritten);
-        self.tcp.write(&mut unwritten);
+        self.ip.write(&mut unwritten)?;
+        self.tcp.write(&mut unwritten)?;
+
         let payload_bytes = unwritten.write(payload)?;
         let unwritten = unwritten.len();
 
@@ -280,8 +287,8 @@ impl Connection {
 
         let ackn = tcph.acknowledgment_number();
         if let State::SynRecvd = self.state {
-            /// --- If Acceptable ACK Check passes
-            /// then enter ESTABLISHED state and continue processing
+            // --- If Acceptable ACK Check passes
+            // then enter ESTABLISHED state and continue processing
             if is_between_wrapped(
                 self.send.una.wrapping_sub(1),
                 ackn,
