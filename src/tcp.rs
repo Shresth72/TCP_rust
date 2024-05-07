@@ -130,10 +130,6 @@ impl Connection {
         c.tcp.syn = true;
         c.tcp.ack = true;
 
-        // eprintln!("got ip header:\n{:02x?}", iph);
-        // eprintln!("got tcp header:\n{:02x?}", tcph);
-        // eprintln!("responding with {:02x?}", &buf[..buf.len() - unwritten]);
-
         c.write(nic, &[])?;
         Ok(Some(c))
     }
@@ -230,13 +226,6 @@ impl Connection {
         tcph: etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
     ) -> io::Result<()> {
-        eprintln!(
-            "got a packet! w fin {:?}, seq {}, acks {}",
-            tcph.fin(),
-            tcph.sequence_number(),
-            tcph.acknowledgment_number()
-        );
-
         // --- Validate Sequence Numbers (RFC 793 S3.3)
 
         // --- Valid Segment Check
@@ -321,10 +310,6 @@ impl Connection {
             assert!(data.is_empty());
 
             if let State::Estab = self.state {
-                eprintln!("Currently in Established state and got a packet");
-                dbg!(tcph.fin());
-                dbg!(self.tcp.fin);
-
                 // Terminate the connection (test)
                 // simplex CLOSE - may continue to receive but won't send back
                 // TODO: needs to be stored in the Retransmission queue
@@ -339,7 +324,6 @@ impl Connection {
         if let State::FinWait1 = self.state {
             if self.send.una == self.send.iss + 2 {
                 // our FIN has been ACKed
-                eprintln!("They've ACKed our FIN");
                 self.state = State::FinWait2;
             }
         }
@@ -348,7 +332,6 @@ impl Connection {
             match self.state {
                 State::FinWait2 => {
                     // we're done with the connection
-                    eprintln!("They've FINed");
                     self.write(nic, &[])?;
                     self.state = State::TimeWait;
                 }
