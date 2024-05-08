@@ -10,27 +10,47 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{self, prelude::*},
     net::Shutdown,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     thread,
 };
 
 const SENDQUEUE_SIZE: usize = 1024;
 
-type InterfaceHandle = Arc<Mutex<ConnectionManager>>;
+#[derive(Default)]
+struct CondMutex {
+    manager: Mutex<ConnectionManager>,
+    pending_var: Condvar,
+}
+
+type InterfaceHandle = Arc<CondMutex>;
 
 pub struct Interface {
-    ih: InterfaceHandle,
-    jh: thread::JoinHandle<io::Result<()>>,
+    ih: Option<InterfaceHandle>,
+    jh: Option<thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Drop for Interface {
+    // Cannot drop ih lock, as JoinHandle consumes self
+    // So, Interface should be an Option<>
     fn drop(&mut self) {
-        todo!()
+        // When Interface drops, all the connections drop too
+        self.ih.as_mut().unwrap().manager.lock().unwrap().terminate = true;
+
+        drop(self.ih.take());
+        self.jh
+            .take()
+            .expect("interface dropped more than once")
+            .join()
+            .unwrap()
+            .unwrap();
+
+        eprintln!("drop from Interface");
     }
 }
 
 #[derive(Default)]
 struct ConnectionManager {
+    terminate: bool,
     connections: HashMap<Quad, tcp::Connection>,
     pending: HashMap<u16, VecDeque<Quad>>,
 }
@@ -39,7 +59,11 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
     let mut buf = [0u8; 1504];
 
     loop {
+        // TODO: set a timeout for this recv for TCP timers or ConnectionManager::terminate
         let nbytes = nic.recv(&mut buf[..])?;
+
+        // TODO: if self.terminate && Arc::get_strong_refs(ih) == 1;
+        // then tear down all connections
 
         /*
         if s/without_packet_info/new/:
@@ -72,8 +96,8 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                         let datai = iph.slice().len() + tcph.slice().len();
 
                         // Deref to get the underlying attributes as it's a MutexGuard
-                        let mut cm = ih.lock().unwrap();
-                        let mut cm = &mut *cm;
+                        let mut cmg = ih.manager.lock().unwrap();
+                        let mut cm = &mut *cmg;
 
                         let q = Quad {
                             src: (src, tcph.source_port()),
@@ -82,6 +106,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 
                         match cm.connections.entry(q) {
                             Entry::Occupied(mut c) => {
+                                eprintln!("Got packet for known quad {:?}", q);
                                 c.get_mut()
                                     .on_packet(&mut nic, iph, tcph, &buf[datai..nbytes])?;
                             }
@@ -89,6 +114,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                             // If there is no current Connection
                             // AND we are willing to create a Connection
                             Entry::Vacant(e) => {
+                                eprintln!("Got packet for unknown quad {:?}", q);
                                 if let Some(pending) = cm.pending.get_mut(&tcph.destination_port())
                                 {
                                     if let Some(c) = tcp::Connection::accept(
@@ -99,6 +125,12 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                                     )? {
                                         e.insert(c);
                                         pending.push_back(q);
+
+                                        // When it notices a pending packet
+                                        // Release the lock from the current thread &
+                                        // Notify the threads
+                                        drop(cmg);
+                                        ih.pending_var.notify_all();
 
                                         // TODO: wake up pending accept()
                                     }
@@ -132,17 +164,22 @@ impl Interface {
             })
         };
 
-        Ok(Interface { ih, jh })
+        Ok(Interface {
+            ih: Some(ih),
+            jh: Some(jh),
+        })
     }
 
     pub fn bind(&mut self, port: u16) -> io::Result<TcpListener> {
         use std::collections::hash_map::Entry;
 
-        let mut cm = self.ih.lock().unwrap();
+        let mut cm = self.ih.as_mut().unwrap().manager.lock().unwrap();
 
         // Do something to start accepting SYN packets on port
         match cm.pending.entry(port) {
-            Entry::Vacant(v) => v.insert(VecDeque::new()),
+            Entry::Vacant(v) => {
+                v.insert(VecDeque::new());
+            }
             Entry::Occupied(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
@@ -152,34 +189,57 @@ impl Interface {
         };
 
         drop(cm);
-        Ok(TcpListener(port, self.ih.clone()))
+        Ok(TcpListener {
+            port,
+            ih: self.ih.as_mut().unwrap().clone(),
+        })
     }
 }
 
-pub struct TcpListener(u16, InterfaceHandle);
+pub struct TcpListener {
+    port: u16,
+    ih: InterfaceHandle,
+}
 
 impl Drop for TcpListener {
     fn drop(&mut self) {
-        todo!()
+        let mut cm = self.ih.manager.lock().unwrap();
+        let pending = cm
+            .pending
+            .remove(&self.port)
+            .expect("port closed while listening still active");
+
+        eprintln!("drop from TcpListener");
+        // terminate the dropped connections
+        for quad in pending {
+            todo!()
+        }
     }
 }
 
 impl TcpListener {
     pub fn accept(&mut self) -> io::Result<TcpStream> {
-        let mut cm = self.1.lock().unwrap();
-        if let Some(quad) = cm
-            .pending
-            .get_mut(&self.0)
-            .expect("port closed while listening still active")
-            .pop_front()
-        {
-            return Ok(TcpStream(quad, self.1.clone()));
-        } else {
-            // TODO: block
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "no conection available to accept",
-            ));
+        let mut cm = self.ih.manager.lock().unwrap();
+
+        loop {
+            if let Some(quad) = cm
+                .pending
+                .get_mut(&self.port)
+                .expect("port closed while listening still active")
+                .pop_front()
+            {
+                return Ok(TcpStream(quad, self.ih.clone()));
+            }
+            // -- Implementing Conditional Variables
+            // Condvar represent rhe ability to block the thread such that it
+            // Consumes no CPU time while waiting for an event to occur.
+            // It takes a Mutex Lock, check a bool Predicate
+            // If not true, waits on the Condvar
+            // That some other thread can notify when it changes
+
+            // We are implementing one CondVar for all pending threads
+
+            cm = self.ih.pending_var.wait(cm).unwrap();
         }
     }
 }
@@ -188,12 +248,16 @@ pub struct TcpStream(Quad, InterfaceHandle);
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        todo!()
+        let mut cm = self.1.manager.lock().unwrap();
+        // TODO: send FIN on cm.connections[quad]
+        // TODO: _eventually_ remove self.quad from cm.connections
+
+        eprintln!("dropping the connection from TcpStream");
     }
 }
 impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut cm = self.1.lock().unwrap();
+        let mut cm = self.1.manager.lock().unwrap();
 
         // Lookup the connection for the TCP we're trying to read from
         let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
@@ -233,7 +297,7 @@ impl Read for TcpStream {
 
 impl Write for TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut cm = self.1.lock().unwrap();
+        let mut cm = self.1.manager.lock().unwrap();
 
         let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
             io::Error::new(
@@ -260,7 +324,7 @@ impl Write for TcpStream {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut cm = self.1.lock().unwrap();
+        let mut cm = self.1.manager.lock().unwrap();
 
         let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
             io::Error::new(
@@ -283,6 +347,7 @@ impl Write for TcpStream {
 
 impl TcpStream {
     pub fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
+        // TODO: send FIN on cm.connections[quad]
         todo!()
     }
 }
