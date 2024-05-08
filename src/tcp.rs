@@ -1,11 +1,21 @@
 #![allow(unused)]
 
+use bitflags::bitflags;
+
 use crate::utils::is_between_wrapped;
 use std::{
     collections::VecDeque,
     io::{self, Write},
 };
 
+bitflags! {
+    pub(crate) struct Available: u8 {
+        const READ = 0b00000001;
+        const WRITE = 0b00000010;
+    }
+}
+
+#[derive(Debug)]
 pub enum State {
     SynRecvd,
     Estab,
@@ -72,6 +82,28 @@ Since the packet data is borrowed from the buffer (`buf`), which is modified in 
 */
 
 impl Connection {
+    pub(crate) fn is_rcv_closed(&self) -> bool {
+        if let State::TimeWait = self.state {
+            // TODO: any state after received FIN: CLOSE-WAIT, LAST-ACK, CLOSED, CLOSING
+            true
+        } else {
+            false
+        }
+    }
+
+    fn availability(&self) -> Available {
+        // TODO: take into account self.state
+
+        let mut a = Available::empty();
+        if self.is_rcv_closed() || !self.incoming.is_empty() {
+            a |= Available::READ;
+        }
+
+        // TODD: set Available::WRITE
+
+        a
+    }
+
     pub fn accept<'a>(
         // 'a - Lifetime of the packet
         nic: &mut tun_tap::Iface,
@@ -227,13 +259,13 @@ impl Connection {
         Ok(())
     }
 
-    pub fn on_packet<'a>(
+    pub(crate) fn on_packet<'a>(
         &mut self,
         nic: &mut tun_tap::Iface,
         iph: etherparse::Ipv4HeaderSlice<'a>,
         tcph: etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
-    ) -> io::Result<()> {
+    ) -> io::Result<Available> {
         // --- Validate Sequence Numbers (RFC 793 S3.3)
 
         // --- Valid Segment Check
@@ -271,8 +303,9 @@ impl Connection {
             }
         };
         if !okay {
+            eprintln!("NOT OKAY");
             self.write(nic, &[])?;
-            return Ok(());
+            return Ok(self.availability());
         }
 
         // When the reciever accepts a segment, it advances the RCV NXT and sends an ACK
@@ -282,7 +315,8 @@ impl Connection {
 
         // If the ACK bit if off, drop the segment and return
         if !tcph.ack() {
-            return Ok(());
+            eprintln!("No ACK");
+            return Ok(self.availability());
         }
 
         let ackn = tcph.acknowledgment_number();
@@ -305,10 +339,12 @@ impl Connection {
         // RFC 793, Page 71
         if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
             if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
-                return Ok(());
+                // When ACK is between them, then only update UNA (things that haven't been acknowledged)
+                eprintln!("BAD ACK, updating UNA");
+                self.send.una = ackn;
             }
-            self.send.una = ackn;
 
+            // TODO: accept data
             assert!(data.is_empty());
 
             if let State::Estab = self.state {
@@ -341,6 +377,6 @@ impl Connection {
             }
         }
 
-        Ok(())
+        Ok(self.availability())
     }
 }

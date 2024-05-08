@@ -20,6 +20,7 @@ const SENDQUEUE_SIZE: usize = 1024;
 struct CondMutex {
     manager: Mutex<ConnectionManager>,
     pending_var: Condvar,
+    rcv_var: Condvar,
 }
 
 type InterfaceHandle = Arc<CondMutex>;
@@ -107,8 +108,22 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                         match cm.connections.entry(q) {
                             Entry::Occupied(mut c) => {
                                 eprintln!("Got packet for known quad {:?}", q);
-                                c.get_mut()
-                                    .on_packet(&mut nic, iph, tcph, &buf[datai..nbytes])?;
+                                let a = c.get_mut().on_packet(
+                                    &mut nic,
+                                    iph,
+                                    tcph,
+                                    &buf[datai..nbytes],
+                                )?;
+
+                                // TODO: compare before/after
+                                drop(cmg);
+                                if a.contains(tcp::Available::READ) {
+                                    ih.rcv_var.notify_all();
+                                }
+
+                                if a.contains(tcp::Available::WRITE) {
+                                    // TODO: ih.send_var.notify_all();
+                                }
                             }
 
                             // If there is no current Connection
@@ -259,39 +274,43 @@ impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut cm = self.1.manager.lock().unwrap();
 
-        // Lookup the connection for the TCP we're trying to read from
-        let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "stream was terminated unexpectedly",
-            )
-        })?;
+        loop {
+            // Lookup the connection for the TCP we're trying to read from
+            let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "stream was terminated unexpectedly",
+                )
+            })?;
 
-        // If no data, block the current read thread
-        if c.incoming.is_empty() {
-            // TODO: block
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "no bytes to read",
-            ));
+            if c.is_rcv_closed() && c.incoming.is_empty() {
+                // No more data to read, as we received closed (FIN)
+                return Ok(0);
+            }
+
+            if !c.incoming.is_empty() {
+                // TODO: detect FIN and return nread = 0
+
+                // Read as much data as possible from the incoming buf
+                let mut nread = 0;
+                let (head, tail) = c.incoming.as_slices();
+
+                let hread = min(buf.len(), head.len());
+                buf.copy_from_slice(&head[..hread]);
+                nread += hread;
+
+                let tread = min(buf.len() - nread, tail.len());
+                buf.copy_from_slice(&tail[..tread]);
+                nread += tread;
+
+                drop(c.incoming.drain(..nread));
+                return Ok(nread);
+            }
+
+            // If no data, block the current read thread and wait for Condvar
+            cm = self.1.rcv_var.wait(cm).unwrap();
+            continue;
         }
-
-        // TODO: detect FIN and return nread = 0
-
-        // Read as much data as possible from the incoming buf
-        let mut nread = 0;
-        let (head, tail) = c.incoming.as_slices();
-
-        let hread = min(buf.len(), head.len());
-        buf.copy_from_slice(&head[..hread]);
-        nread += hread;
-
-        let tread = min(buf.len() - nread, tail.len());
-        buf.copy_from_slice(&tail[..tread]);
-        nread += tread;
-
-        drop(c.incoming.drain(..nread));
-        Ok(nread)
     }
 }
 

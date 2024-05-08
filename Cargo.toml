@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bitflags = "2.5.0"
 etherparse = { version = "0.14.3", features = ["std"] }
 tun-tap = "0.1.4"
 
