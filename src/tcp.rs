@@ -17,6 +17,7 @@ bitflags! {
 
 #[derive(Debug)]
 pub enum State {
+    // Listen,
     SynRecvd,
     Estab,
     FinWait1,
@@ -40,9 +41,9 @@ pub struct Connection {
     ip: etherparse::Ipv4Header,
     tcp: etherparse::TcpHeader,
 
-    // bytes that the Connection has read, but not the user
+    // bytes that the Connection has read, but haven't returned to the caller
     pub(crate) incoming: VecDeque<u8>,
-    // bytes that the user has given to the connection but we have not been able to send yet
+    // bytes that the user has given to the connection but we have not been acked by the reciever (incase a packet gets dropped)
     pub(crate) unacked: VecDeque<u8>,
 }
 
@@ -344,18 +345,17 @@ impl Connection {
                 self.send.una = ackn;
             }
 
-            // TODO: accept data
-            assert!(data.is_empty());
+            // Accept data and make it available to read calls
+            // TODO: only read data we haven't read
+            self.incoming.extend(data);
+            // TODO: wake up waiting readers
 
-            if let State::Estab = self.state {
-                // Terminate the connection (test)
-                // simplex CLOSE - may continue to receive but won't send back
-                // TODO: needs to be stored in the Retransmission queue
-                // as fin should only be set at the very last set of packet sent during the connection
-                self.tcp.fin = true;
-                self.write(nic, &[])?;
-                self.state = State::FinWait1;
-            }
+            // Shutdown the connection immediately (only for testing)
+            // if let State::Estab = self.state {
+            //     self.tcp.fin = true;
+            //     self.write(nic, &[])?;
+            //     self.state = State::FinWait1;
+            // }
         }
 
         // RFC 793, Page 72
