@@ -11,7 +11,7 @@ fn main() -> io::Result<()> {
     while let Ok(mut stream) = listener.accept() {
         eprintln!("got connection!");
         thread::spawn(move || {
-            // stream.write(b"hello from rust-tcp!\n").unwrap();
+            stream.write(b"hello from rust-tcp!\n").unwrap();
             stream.shutdown(Shutdown::Write).unwrap();
             loop {
                 let mut buf = [0; 512];
