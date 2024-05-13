@@ -364,6 +364,7 @@ impl Connection {
             if let State::Estab = self.state {
                 // TODO: needs to be stored in the retransmission queue!
 
+                //
                 self.tcp.fin = true;
                 self.write(nic, &[])?;
                 self.state = State::FinWait2;
