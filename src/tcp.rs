@@ -274,20 +274,29 @@ impl Connection {
         // Okay if it acks at least one byte, so two statements are true:
         // RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
         // RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+
         let seqn = tcph.sequence_number();
-        let wend = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
-        let slen = match data.len() as u32 {
-            len if tcph.fin() && tcph.syn() => len + 2,
-            len if tcph.fin() || tcph.syn() => len + 1,
-            len => len,
+        let mut slen = data.len() as u32;
+        if tcph.fin() {
+            slen += 1;
         };
+        if tcph.syn() {
+            slen += 1;
+        };
+        let wend = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
 
         let okay = if slen == 0 {
-            // zero length segment has seperate rules for acceptance
+            // zero-length segment has separate rules for acceptance
             if self.recv.wnd == 0 {
-                seqn == self.recv.nxt
+                if seqn != self.recv.nxt {
+                    false
+                } else {
+                    true
+                }
+            } else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend) {
+                false
             } else {
-                is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend)
+                true
             }
         } else {
             if self.recv.wnd == 0 {
@@ -304,6 +313,7 @@ impl Connection {
                 true
             }
         };
+
         if !okay {
             eprintln!("NOT OKAY");
             self.write(nic, &[])?;
@@ -356,7 +366,7 @@ impl Connection {
 
                 self.tcp.fin = true;
                 self.write(nic, &[])?;
-                self.state = State::FinWait1;
+                self.state = State::FinWait2;
             }
         }
 
@@ -398,20 +408,25 @@ impl Connection {
         // }
 
         if tcph.fin() {
-            // match self.state {
-            //     State::FinWait2 => {
-            //         self.write(nic, &[])?;
-            //         self.state = State::TimeWait;
-            //     }
-            //     _ => unreachable!(),
-            // }
+            match self.state {
+                State::FinWait2 => {
+                    println!("Finwait2");
+                    self.write(nic, &[])?;
+                    self.state = State::TimeWait;
+                }
 
-            if let State::FinWait2 = self.state {
-                // we're done with the connection
-                self.recv.nxt = self.recv.nxt.wrapping_add(1);
-                self.write(nic, &[])?;
-                self.state = State::TimeWait;
+                State::FinWait1 => {
+                    println!("Finwait1");
+                }
+                _ => unreachable!(),
             }
+
+            // if let State::FinWait2 = self.state {
+            //     // we're done with the connection
+            //     self.recv.nxt = self.recv.nxt.wrapping_add(1);
+            //     self.write(nic, &[])?;
+            //     self.state = State::TimeWait;
+            // }
         }
 
         Ok(self.availability())
