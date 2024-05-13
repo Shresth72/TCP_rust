@@ -6,7 +6,7 @@ pub struct Quad {
     pub dst: (Ipv4Addr, u16),
 }
 
-fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
+pub fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
     // RFC 1323:
     /*
         TCP determines if a data segement is "old" or "new" by testing
