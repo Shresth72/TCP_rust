@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use bitflags::bitflags;
+use nix::NixPath;
 
 use crate::utils::is_between_wrapped;
 use std::{
@@ -309,13 +310,13 @@ impl Connection {
             return Ok(self.availability());
         }
 
-        // When the reciever accepts a segment, it advances the RCV NXT and sends an ACK
-        self.recv.nxt = seqn.wrapping_add(slen);
-        // TODO: if not_acceptable, send ACK
-        // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-
         // If the ACK bit if off, drop the segment and return
         if !tcph.ack() {
+            if tcph.syn() {
+                // got SYN part of initial handshake
+                assert!(data.is_empty());
+                self.recv.nxt = seqn.wrapping_add(1);
+            }
             eprintln!("No ACK");
             return Ok(self.availability());
         }
@@ -345,17 +346,18 @@ impl Connection {
                 self.send.una = ackn;
             }
 
-            // Accept data and make it available to read calls
-            // TODO: only read data we haven't read
-            self.incoming.extend(data);
-            // TODO: wake up waiting readers
+            // TODO: prune self.unacked
+            // TODO: if unacked empty and waiting flush, notify
+            // TODO: update window
 
             // Shutdown the connection immediately (only for testing)
-            // if let State::Estab = self.state {
-            //     self.tcp.fin = true;
-            //     self.write(nic, &[])?;
-            //     self.state = State::FinWait1;
-            // }
+            if let State::Estab = self.state {
+                // TODO: needs to be stored in the retransmission queue!
+
+                self.tcp.fin = true;
+                self.write(nic, &[])?;
+                self.state = State::FinWait1;
+            }
         }
 
         // RFC 793, Page 72
@@ -366,14 +368,49 @@ impl Connection {
             }
         }
 
+        // RFC 793 (page 73)
+        // if !data.is_empty() {
+        if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
+            let mut unacked_data_at = self.recv.nxt.wrapping_sub(seqn) as usize;
+            if unacked_data_at > data.len() {
+                // we must have reache a retransmitted FIN, that was already seen
+                // nxt points to beyond the fin, but the fun is not in data!
+                assert_eq!(unacked_data_at, data.len() + 1);
+                unacked_data_at = 0;
+            }
+
+            // Accept data and make it available to read calls
+            // TODO: only read data we haven't read
+            self.incoming.extend(&data[unacked_data_at..]);
+
+            // Once the TCP takes responsibility for the data it advances
+            // RCV.NXT over the data accepted, and adjusts RCV.WND as
+            // appropriate to the current buffer availability. The total of
+            // RCV.NXT and RCV.WND should not be reduced.
+            self.recv.nxt = seqn
+                .wrapping_add(data.len() as u32)
+                .wrapping_add(if tcph.fin() { 1 } else { 0 });
+
+            // Send an acknowledgement of the form:
+            // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK> (already handeled in write)
+            self.write(nic, &[])?;
+        }
+        // }
+
         if tcph.fin() {
-            match self.state {
-                State::FinWait2 => {
-                    // we're done with the connection
-                    self.write(nic, &[])?;
-                    self.state = State::TimeWait;
-                }
-                _ => unreachable!(),
+            // match self.state {
+            //     State::FinWait2 => {
+            //         self.write(nic, &[])?;
+            //         self.state = State::TimeWait;
+            //     }
+            //     _ => unreachable!(),
+            // }
+
+            if let State::FinWait2 = self.state {
+                // we're done with the connection
+                self.recv.nxt = self.recv.nxt.wrapping_add(1);
+                self.write(nic, &[])?;
+                self.state = State::TimeWait;
             }
         }
 

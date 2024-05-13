@@ -5,30 +5,26 @@ use std::{
 
 fn main() -> io::Result<()> {
     let mut i = tcp_rust::Interface::new()?;
-    let mut l1 = i.bind(9000)?;
-    let mut l2 = i.bind(9001)?;
+    let mut listener = i.bind(8000)?;
 
-    let jh1 = thread::spawn(move || {
-        while let Ok(mut stream) = l1.accept() {
-            eprintln!("got connection! on {}", 9000);
-
-            let n = stream.read(&mut [0]).unwrap();
-            eprintln!("read data");
-            // atleast detect when there's no more data
-            assert_eq!(n, 0);
-
-            eprintln!("no more data!");
-        }
-    });
-
-    let jh2 = thread::spawn(move || {
-        while let Ok(_stream) = l2.accept() {
-            eprintln!("got connection! on {}", 9001);
-        }
-    });
-
-    jh1.join().unwrap();
-    jh2.join().unwrap();
+    while let Ok(mut stream) = listener.accept() {
+        eprintln!("got connection!");
+        thread::spawn(move || {
+            // stream.write(b"hello from rust-tcp!\n").unwrap();
+            // stream.shutdown(std::net::Shutdown::Write).unwrap();
+            loop {
+                let mut buf = [0; 512];
+                let n = stream.read(&mut buf[..]).unwrap();
+                eprintln!("read {}b of data", n);
+                if n == 0 {
+                    eprintln!("no more data!");
+                    break;
+                } else {
+                    println!("{}", std::str::from_utf8(&buf[..n]).unwrap());
+                }
+            }
+        });
+    }
 
     Ok(())
 }

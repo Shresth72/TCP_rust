@@ -283,10 +283,13 @@ impl Read for TcpStream {
                 )
             })?;
 
+            eprintln!("trying to read");
             if c.is_rcv_closed() && c.incoming.is_empty() {
                 // No more data to read, as we received closed (FIN)
+                eprintln!("connection closed");
                 return Ok(0);
             }
+            eprintln!("connection still active");
 
             if !c.incoming.is_empty() {
                 // TODO: detect FIN and return nread = 0
@@ -294,22 +297,18 @@ impl Read for TcpStream {
                 // Read as much data as possible from the incoming buf
                 let mut nread = 0;
                 let (head, tail) = c.incoming.as_slices();
-
-                let hread = min(buf.len(), head.len());
-                buf.copy_from_slice(&head[..hread]);
+                let hread = std::cmp::min(buf.len(), head.len());
+                buf[..hread].copy_from_slice(&head[..hread]);
                 nread += hread;
-
-                let tread = min(buf.len() - nread, tail.len());
-                buf.copy_from_slice(&tail[..tread]);
+                let tread = std::cmp::min(buf.len() - nread, tail.len());
+                buf[hread..(hread + tread)].copy_from_slice(&tail[..tread]);
                 nread += tread;
-
                 drop(c.incoming.drain(..nread));
                 return Ok(nread);
             }
 
             // If no data, block the current read thread and wait for Condvar
             cm = self.1.rcv_var.wait(cm).unwrap();
-            continue;
         }
     }
 }
