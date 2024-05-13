@@ -16,6 +16,7 @@ bitflags! {
     }
 }
 
+// RFC 793 (page 23)
 #[derive(Debug)]
 pub enum State {
     // Listen,
@@ -46,6 +47,8 @@ pub struct Connection {
     pub(crate) incoming: VecDeque<u8>,
     // bytes that the user has given to the connection but we have not been acked by the reciever (incase a packet gets dropped)
     pub(crate) unacked: VecDeque<u8>,
+
+    pub(crate) closed: bool,
 }
 
 // State of the Send Sequence Space (RFC 793 S3.2 F4)
@@ -165,6 +168,8 @@ impl Connection {
 
             incoming: Default::default(),
             unacked: Default::default(),
+
+            closed: false,
         };
 
         // Establish connection
@@ -364,7 +369,6 @@ impl Connection {
             if let State::Estab = self.state {
                 // TODO: needs to be stored in the retransmission queue!
 
-                //
                 self.tcp.fin = true;
                 self.write(nic, &[])?;
                 self.state = State::FinWait2;
@@ -415,21 +419,14 @@ impl Connection {
                     self.write(nic, &[])?;
                     self.state = State::TimeWait;
                 }
-
-                State::FinWait1 => {
-                    println!("Finwait1");
-                }
                 _ => unreachable!(),
             }
-
-            // if let State::FinWait2 = self.state {
-            //     // we're done with the connection
-            //     self.recv.nxt = self.recv.nxt.wrapping_add(1);
-            //     self.write(nic, &[])?;
-            //     self.state = State::TimeWait;
-            // }
         }
 
         Ok(self.availability())
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.closed = true;
     }
 }

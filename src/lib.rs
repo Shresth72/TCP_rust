@@ -366,6 +366,16 @@ impl Write for TcpStream {
 impl TcpStream {
     pub fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
         // TODO: send FIN on cm.connections[quad]
+        let mut cm = self.1.manager.lock().unwrap();
+        let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "stream was terminated unexpectedly",
+            )
+        })?;
+
+        c.close();
+
         todo!()
     }
 }

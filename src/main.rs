@@ -1,5 +1,6 @@
 use std::{
     io::{self, prelude::*},
+    net::Shutdown,
     thread,
 };
 
@@ -11,7 +12,7 @@ fn main() -> io::Result<()> {
         eprintln!("got connection!");
         thread::spawn(move || {
             // stream.write(b"hello from rust-tcp!\n").unwrap();
-            // stream.shutdown(std::net::Shutdown::Write).unwrap();
+            stream.shutdown(Shutdown::Write).unwrap();
             loop {
                 let mut buf = [0; 512];
                 let n = stream.read(&mut buf[..]).unwrap();
