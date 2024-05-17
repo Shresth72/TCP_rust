@@ -129,7 +129,9 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 
                         match cm.connections.entry(q) {
                             Entry::Occupied(mut c) => {
-                                eprintln!("Got packet for known quad {:?}", q);
+                                //
+                                // eprintln!("Got packet for known quad {:?}", q);
+                                //
                                 let a = c.get_mut().on_packet(
                                     &mut nic,
                                     iph,
@@ -151,8 +153,9 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                             // If there is no current Connection
                             // AND we are willing to create a Connection
                             Entry::Vacant(e) => {
+                                //
                                 // eprintln!("Got packet for unknown quad {:?}", q);
-
+                                //
                                 if let Some(pending) = cm.pending.get_mut(&tcph.destination_port())
                                 {
                                     if let Some(c) = tcp::Connection::accept(
@@ -356,7 +359,7 @@ impl Write for TcpStream {
                 let nwrite = min(buf.len(), SENDQUEUE_SIZE - c.unacked.len());
                 c.unacked.extend(buf[..nwrite].iter());
 
-                println!("sending nwrite: {}", nwrite);
+                self.1.send_var.notify_all();
                 return Ok(nwrite);
             }
 

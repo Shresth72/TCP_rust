@@ -315,27 +315,6 @@ impl Connection {
 
         nic.send(&buf[..payload_ends_at])?;
 
-        /* let mut unwritten = &mut buf[..];
-                self.ip.write(&mut unwritten)?;
-                self.tcp.write(&mut unwritten)?;
-
-                let payload_bytes = unwritten.write(payload)?;
-                let unwritten = unwritten.len();
-
-                // When the sender creates a segment and transmits it
-                // the sender advances SND NXT
-                self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
-                if self.tcp.syn {
-                    self.send.nxt = self.send.nxt.wrapping_add(1);
-                    self.tcp.syn = false;
-                }
-                if self.tcp.fin {
-                    self.send.nxt = self.send.nxt.wrapping_add(1);
-                    self.tcp.fin = false;
-                }
-
-                nic.send(&buf[..buf.len() - unwritten])?;
-        */
         Ok(payload_bytes)
     }
 
