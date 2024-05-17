@@ -510,18 +510,50 @@ impl Connection {
 
         // RFC 793, Page 71
         if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
-            if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
-                // When ACK is between them, then only update UNA (things that haven't been acknowledged)
-                eprintln!("BAD ACK, updating UNA");
+            // When ACK is between them, then only update UNA (things that haven't been acknowledged)
+
+            if is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+                println!(
+                    "ack for {} (last: {}); prune in {:?}",
+                    ackn, self.send.una, self.unacked
+                );
+
+                // TODO: if unacked empty and waiting flush, notify
+                if !self.unacked.is_empty() {
+                    let data_start = if self.send.una == self.send.iss {
+                        // send.una hasn't been updated yet with ACK for our SYN,
+                        // so data starts just beyond it
+                        self.send.una.wrapping_add(1)
+                    } else {
+                        self.send.una
+                    };
+
+                    let acked_data_end =
+                        std::cmp::min(ackn.wrapping_sub(data_start) as usize, self.unacked.len());
+                    self.unacked.drain(..acked_data_end);
+
+                    let old = std::mem::replace(&mut self.timers.send_times, BTreeMap::new());
+
+                    let una = self.send.una;
+                    let mut srtt = &mut self.timers.srtt;
+                    self.timers
+                        .send_times
+                        .extend(old.into_iter().filter_map(|(seq, sent)| {
+                            if is_between_wrapped(una, seq, ackn) {
+                                *srtt = 0.8 * *srtt + (1.0 - 0.8) * sent.elapsed().as_secs_f64();
+                                None
+                            } else {
+                                Some((seq, sent))
+                            }
+                        }));
+                }
+
+                // eprintln!("BAD ACK, updating UNA");
                 self.send.una = ackn;
             }
 
-            // TODO: prune self.unacked
-            // TODO: if unacked empty and waiting flush, notify
             // TODO: update window
 
-            // TODO: needs to be stored in the retransmission queue!
-            //
             // Shutdown the connection immediately (only for testing)
             // if let State::Estab = self.state {
             //     self.tcp.fin = true;
@@ -532,46 +564,51 @@ impl Connection {
 
         // RFC 793, Page 72
         if let State::FinWait1 = self.state {
-            if self.send.una == self.send.iss + 2 {
-                // our FIN has been ACKed
-                self.state = State::FinWait2;
+            if let Some(closed_at) = self.closed_at {
+                if self.send.una == closed_at.wrapping_add(1) {
+                    // our FIN has been ACKed
+                    self.state = State::FinWait2;
+                }
             }
         }
 
         // RFC 793 (page 73)
-        // if !data.is_empty() {
-        if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
-            let mut unacked_data_at = self.recv.nxt.wrapping_sub(seqn) as usize;
-            if unacked_data_at > data.len() {
-                // we must have reache a retransmitted FIN, that was already seen
-                // nxt points to beyond the fin, but the fun is not in data!
-                assert_eq!(unacked_data_at, data.len() + 1);
-                unacked_data_at = 0;
+        if !data.is_empty() {
+            if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
+                let mut unacked_data_at = self.recv.nxt.wrapping_sub(seqn) as usize;
+                if unacked_data_at > data.len() {
+                    // we must have reache a retransmitted FIN, that was already seen
+                    // nxt points to beyond the fin, but the fun is not in data!
+                    assert_eq!(unacked_data_at, data.len() + 1);
+                    unacked_data_at = 0;
+                }
+
+                // Accept data and make it available to read calls
+                // TODO: only read data we haven't read
+                self.incoming.extend(&data[unacked_data_at..]);
+
+                // Once the TCP takes responsibility for the data it advances
+                // RCV.NXT over the data accepted, and adjusts RCV.WND as
+                // appropriate to the current buffer availability. The total of
+                // RCV.NXT and RCV.WND should not be reduced.
+                self.recv.nxt = seqn
+                    .wrapping_add(data.len() as u32)
+                    .wrapping_add(if tcph.fin() { 1 } else { 0 });
+
+                // Send an acknowledgement of the form:
+                // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK> (already handeled in write)
+                self.write(nic, self.send.nxt, 0)?;
             }
-
-            // Accept data and make it available to read calls
-            // TODO: only read data we haven't read
-            self.incoming.extend(&data[unacked_data_at..]);
-
-            // Once the TCP takes responsibility for the data it advances
-            // RCV.NXT over the data accepted, and adjusts RCV.WND as
-            // appropriate to the current buffer availability. The total of
-            // RCV.NXT and RCV.WND should not be reduced.
-            self.recv.nxt = seqn
-                .wrapping_add(data.len() as u32)
-                .wrapping_add(if tcph.fin() { 1 } else { 0 });
-
-            // Send an acknowledgement of the form:
-            // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK> (already handeled in write)
-            self.write(nic, &[])?;
         }
-        // }
 
         if tcph.fin() {
             match self.state {
                 State::FinWait2 => {
-                    println!("Finwait2");
-                    self.write(nic, &[])?;
+                    // done with the connection
+                    println!("in state FinWait2");
+
+                    self.recv.nxt = self.recv.nxt.wrapping_add(1);
+                    self.write(nic, self.send.nxt, 0)?;
                     self.state = State::TimeWait;
                 }
                 _ => unreachable!(),
@@ -581,7 +618,23 @@ impl Connection {
         Ok(self.availability())
     }
 
-    pub(crate) fn close(&mut self) {
+    pub(crate) fn close(&mut self) -> io::Result<()> {
         self.closed = true;
+        match self.state {
+            State::Estab | State::SynRecvd => {
+                self.state = State::FinWait1;
+            }
+
+            State::FinWait1 | State::FinWait2 => {}
+
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "connection already closed",
+                ))
+            }
+        };
+
+        Ok(())
     }
 }

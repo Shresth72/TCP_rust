@@ -6,7 +6,7 @@ mod utils;
 use utils::Quad;
 
 use std::{
-    cmp::min,
+    cmp::{self, min},
     collections::{HashMap, VecDeque},
     io::{self, prelude::*},
     net::Shutdown,
@@ -17,13 +17,13 @@ use std::{
 const SENDQUEUE_SIZE: usize = 1024;
 
 #[derive(Default)]
-struct CondMutex {
+struct CondvarMutex {
     manager: Mutex<ConnectionManager>,
     pending_var: Condvar,
     rcv_var: Condvar,
 }
 
-type InterfaceHandle = Arc<CondMutex>;
+type InterfaceHandle = Arc<CondvarMutex>;
 
 pub struct Interface {
     ih: Option<InterfaceHandle>,
@@ -45,7 +45,7 @@ impl Drop for Interface {
             .unwrap()
             .unwrap();
 
-        eprintln!("drop from Interface");
+        eprintln!("Dropped from Interface");
     }
 }
 
@@ -60,7 +60,28 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
     let mut buf = [0u8; 1504];
 
     loop {
-        // TODO: set a timeout for this recv for TCP timers or ConnectionManager::terminate
+        // *Timer for Retransmission* and using *File Descripter*
+        // We want to read from nic, but we wnt to make sure that we'll wake up
+        // when the next timer has to be triggered!
+        use std::os::unix::io::AsRawFd;
+
+        let mut pfd = [nix::poll::PollFd::new(
+            nic.as_raw_fd(),
+            nix::poll::EventFlags::POLLIN,
+        )];
+        let n = nix::poll::poll(&mut pfd[..], 10).map_err(|e| e.as_errno().unwrap())?;
+        assert_ne!(n, -1);
+
+        if n == 0 {
+            let mut cmg = ih.manager.lock().unwrap();
+            for connection in cmg.connections.values_mut() {
+                // TODO: handle error
+                connection.on_tick(&mut nic)?;
+            }
+            continue;
+        }
+        assert_eq!(n, 1);
+
         let nbytes = nic.recv(&mut buf[..])?;
 
         // TODO: if self.terminate && Arc::get_strong_refs(ih) == 1;
@@ -84,7 +105,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                 let src = iph.source_addr();
                 let dst = iph.destination_addr();
                 if iph.protocol() != etherparse::IpNumber(0x06) {
-                    // eprintln!("Not a TCP Packet");
+                    // Not a TCP Packet
                     continue;
                 }
 
@@ -159,7 +180,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                 }
             }
             Err(_) => {
-                // eprintln!("ignoring packet {:?}", e);
+                // eprintln!("ignoring other packet {:?}", e);
             }
         }
     }
@@ -225,8 +246,9 @@ impl Drop for TcpListener {
             .expect("port closed while listening still active");
 
         eprintln!("drop from TcpListener");
-        // terminate the dropped connections
+
         for quad in pending {
+            // TODO: terminate the dropped connections
             todo!()
         }
     }
@@ -270,6 +292,7 @@ impl Drop for TcpStream {
         eprintln!("dropping the connection from TcpStream");
     }
 }
+
 impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut cm = self.1.manager.lock().unwrap();
@@ -289,6 +312,7 @@ impl Read for TcpStream {
                 eprintln!("connection closed");
                 return Ok(0);
             }
+
             eprintln!("connection still active");
 
             if !c.incoming.is_empty() {
@@ -374,8 +398,6 @@ impl TcpStream {
             )
         })?;
 
-        c.close();
-
-        todo!()
+        c.close()
     }
 }
