@@ -113,6 +113,9 @@ impl Connection {
         }
 
         // TODD: set Available::WRITE
+        // if  {
+        //     a |= Available::WRITE;
+        // }
 
         a
     }
@@ -220,10 +223,11 @@ impl Connection {
             }
         }
         println!(
-            "using offset {} base {} in {:?}",
+            "using offset {} base {}: {}",
             offset,
             self.send.una,
-            self.unacked.as_slices()
+            // self.unacked.as_slices(),
+            std::str::from_utf8(self.unacked.as_slices().0).unwrap()
         );
 
         let (mut h, mut t) = self.unacked.as_slices();
@@ -513,9 +517,15 @@ impl Connection {
             // When ACK is between them, then only update UNA (things that haven't been acknowledged)
 
             if is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+                // println!(
+                //     "ack for {} (last: {}); prune in {:?}",
+                //     ackn, self.send.una, self.unacked
+                // );
                 println!(
-                    "ack for {} (last: {}); prune in {:?}",
-                    ackn, self.send.una, self.unacked
+                    "ack for {} (last: {}); prune in: {}",
+                    ackn,
+                    self.send.una,
+                    std::str::from_utf8(self.unacked.as_slices().0).unwrap()
                 );
 
                 // TODO: if unacked empty and waiting flush, notify
@@ -634,6 +644,12 @@ impl Connection {
                 ))
             }
         };
+
+        Ok(())
+    }
+
+    pub(crate) fn wake_up(&mut self) -> io::Result<()> {
+        self.closed = true;
 
         Ok(())
     }

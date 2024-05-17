@@ -21,6 +21,7 @@ struct CondvarMutex {
     manager: Mutex<ConnectionManager>,
     pending_var: Condvar,
     rcv_var: Condvar,
+    send_var: Condvar,
 }
 
 type InterfaceHandle = Arc<CondvarMutex>;
@@ -143,14 +144,15 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                                 }
 
                                 if a.contains(tcp::Available::WRITE) {
-                                    // TODO: ih.send_var.notify_all();
+                                    ih.send_var.notify_all();
                                 }
                             }
 
                             // If there is no current Connection
                             // AND we are willing to create a Connection
                             Entry::Vacant(e) => {
-                                eprintln!("Got packet for unknown quad {:?}", q);
+                                // eprintln!("Got packet for unknown quad {:?}", q);
+
                                 if let Some(pending) = cm.pending.get_mut(&tcph.destination_port())
                                 {
                                     if let Some(c) = tcp::Connection::accept(
@@ -268,14 +270,13 @@ impl TcpListener {
                 return Ok(TcpStream(quad, self.ih.clone()));
             }
             // -- Implementing Conditional Variables
-            // Condvar represent rhe ability to block the thread such that it
+            // Condvar represents the ability to block the thread such that it
             // Consumes no CPU time while waiting for an event to occur.
             // It takes a Mutex Lock, check a bool Predicate
             // If not true, waits on the Condvar
             // That some other thread can notify when it changes
 
             // We are implementing one CondVar for all pending threads
-
             cm = self.ih.pending_var.wait(cm).unwrap();
         }
     }
@@ -332,6 +333,7 @@ impl Read for TcpStream {
             }
 
             // If no data, block the current read thread and wait for Condvar
+            println!("blocking read now");
             cm = self.1.rcv_var.wait(cm).unwrap();
         }
     }
@@ -341,28 +343,28 @@ impl Write for TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut cm = self.1.manager.lock().unwrap();
 
-        let c = cm.connections.get_mut(&self.0).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "stream was terminated unexpectedly",
-            )
-        })?;
+        loop {
+            let mut c = cm.connections.get_mut(&self.0).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "stream was terminated unexpectedly",
+                )
+            })?;
 
-        if c.unacked.len() >= SENDQUEUE_SIZE {
-            // TODO: block
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "too many bytes buffered",
-            ));
+            if c.unacked.len() < SENDQUEUE_SIZE {
+                // Either write the amount of bytes we have, or how much we are allowed to
+                let nwrite = min(buf.len(), SENDQUEUE_SIZE - c.unacked.len());
+                c.unacked.extend(buf[..nwrite].iter());
+
+                println!("sending nwrite: {}", nwrite);
+                return Ok(nwrite);
+            }
+
+            // TODO: wake up writer
+
+            println!("blocking write");
+            cm = self.1.send_var.wait(cm).unwrap();
         }
-
-        // Either write the amount of bytes we have, or how much we are allowed to
-        let nwrite = min(buf.len(), SENDQUEUE_SIZE - c.unacked.len());
-        c.unacked.extend(buf[..nwrite].iter());
-
-        // TODO: wake up writer
-
-        Ok(nwrite)
     }
 
     fn flush(&mut self) -> io::Result<()> {
